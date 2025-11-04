@@ -10,7 +10,6 @@ import {
   useCopyToClipboard,
   Checkbox,
   useMediaQuery,
-  Dialog,
 } from '@neo4j-ndl/react';
 import {
   forwardRef,
@@ -51,8 +50,8 @@ import { useCredentials } from '../context/UserCredentials';
 import {
   ArrowPathIconSolid,
   ClipboardDocumentIconSolid,
-  MagnifyingGlassCircleIconSolid,
   DocumentTextIconSolid,
+  ExploreIcon,
 } from '@neo4j-ndl/react/icons';
 import CustomProgressBar from './UI/CustomProgressBar';
 import subscribe from '../services/PollingAPI';
@@ -63,12 +62,12 @@ import { XMarkIconOutline } from '@neo4j-ndl/react/icons';
 import cancelAPI from '../services/CancelAPI';
 import { IconButtonWithToolTip } from './UI/IconButtonToolTip';
 import { batchSize, largeFileSize, llms } from '../utils/Constants';
-import { showErrorToast, showNormalToast } from '../utils/toasts';
+import { showErrorToast, showNormalToast } from '../utils/Toasts';
 import { ThemeWrapperContext } from '../context/ThemeWrapper';
 import BreakDownPopOver from './BreakDownPopOver';
 import { InformationCircleIconOutline } from '@neo4j-ndl/react/icons';
-import { useLocation } from 'react-router';
-import Login from './Login/Index';
+import { useAuth0 } from '@auth0/auth0-react';
+import React from 'react';
 
 let onlyfortheFirstRender = true;
 
@@ -89,9 +88,8 @@ const FileTable: ForwardRefRenderFunction<ChildRef, FileTableProps> = (props, re
   const { colorMode } = useContext(ThemeWrapperContext);
   const [copyRow, setCopyRow] = useState<boolean>(false);
   const islargeDesktop = useMediaQuery(`(min-width:1440px )`);
-  const { pathname } = useLocation();
   const tableRef = useRef(null);
-
+  const { isAuthenticated } = useAuth0();
   const { updateStatusForLargeFiles } = useServerSideEvent(
     (inMinutes, time, fileName) => {
       showNormalToast(`${fileName} will take approx ${time} ${inMinutes ? 'Min' : 'Sec'}`);
@@ -107,7 +105,7 @@ const FileTable: ForwardRefRenderFunction<ChildRef, FileTableProps> = (props, re
     setCopyRow(true);
     setTimeout(() => {
       setCopyRow(false);
-    }, 5000);
+    }, 3000);
   };
   const columns = useMemo(
     () => [
@@ -177,7 +175,7 @@ const FileTable: ForwardRefRenderFunction<ChildRef, FileTableProps> = (props, re
           if (info.getValue() != 'Processing') {
             return (
               <div
-                className='cellClass flex gap-1 items-center'
+                className='cellClass flex! gap-1 items-center'
                 title={info.row.original?.status === 'Failed' ? info.row.original?.errorMessage : ''}
               >
                 <div>
@@ -203,7 +201,7 @@ const FileTable: ForwardRefRenderFunction<ChildRef, FileTableProps> = (props, re
             );
           } else if (info.getValue() === 'Processing' && info.row.original.processingProgress === undefined) {
             return (
-              <div className='cellClass flex gap-1 items-center'>
+              <div className='cellClass flex! gap-1 items-center'>
                 <div>
                   <StatusIndicator type={statusCheck(info.getValue())} />
                 </div>
@@ -268,7 +266,7 @@ const FileTable: ForwardRefRenderFunction<ChildRef, FileTableProps> = (props, re
             );
           }
           return (
-            <div className='cellClass flex gap-1'>
+            <div className='cellClass flex! gap-1'>
               <div>
                 <StatusIndicator type={statusCheck(info.getValue())} />
               </div>
@@ -339,9 +337,9 @@ const FileTable: ForwardRefRenderFunction<ChildRef, FileTableProps> = (props, re
       columnHelper.accessor((row) => row.uploadProgress, {
         id: 'uploadprogess',
         cell: (info: CellContext<CustomFile, string>) => {
-          if (parseInt(info.getValue()) === 100 || info.row.original?.status === 'New') {
+          if (Number(info.getValue()) === 100 || info.row.original?.status === 'New') {
             return (
-              <div className='flex gap-1 items-center'>
+              <div className='flex! gap-1 items-center'>
                 <Typography variant='body-medium'>
                   <StatusIndicator type='success' />
                 </Typography>
@@ -349,10 +347,10 @@ const FileTable: ForwardRefRenderFunction<ChildRef, FileTableProps> = (props, re
               </div>
             );
           } else if (info.row.original?.status === 'Uploading') {
-            return <CustomProgressBar value={parseInt(info?.getValue())}></CustomProgressBar>;
+            return <CustomProgressBar value={Number(info?.getValue())}></CustomProgressBar>;
           } else if (info.row.original?.status === 'Failed') {
             return (
-              <div className='flex gap-1 items-center'>
+              <div className='flex! gap-1 items-center'>
                 <Typography variant='body-medium'>
                   <StatusIndicator type='danger' />
                 </Typography>
@@ -361,7 +359,7 @@ const FileTable: ForwardRefRenderFunction<ChildRef, FileTableProps> = (props, re
             );
           }
           return (
-            <div className='flex items-center gap-1'>
+            <div className='flex! items-center gap-1'>
               <Typography variant='body-medium'>
                 <StatusIndicator type='success' />
               </Typography>
@@ -374,7 +372,7 @@ const FileTable: ForwardRefRenderFunction<ChildRef, FileTableProps> = (props, re
       }),
       columnHelper.accessor((row) => row.size, {
         id: 'fileSize',
-        cell: (info: CellContext<CustomFile, string>) => <i>{(parseInt(info?.getValue()) / 1000)?.toFixed(2)}</i>,
+        cell: (info: CellContext<CustomFile, string>) => <i>{(Number(info?.getValue()) / 1000)?.toFixed(2)}</i>,
         header: () => <span>Size (KB)</span>,
         footer: (info) => info.column.id,
       }),
@@ -389,7 +387,7 @@ const FileTable: ForwardRefRenderFunction<ChildRef, FileTableProps> = (props, re
             return (
               <Flex>
                 <span>
-                  <TextLink isExternalLink={true} href={info.row.original.sourceUrl}>
+                  <TextLink type='external' target='_blank' href={info.row.original.sourceUrl}>
                     {info.row.original.fileSource}
                   </TextLink>
                 </span>
@@ -580,11 +578,11 @@ const FileTable: ForwardRefRenderFunction<ChildRef, FileTableProps> = (props, re
               clean
               onClick={() => onInspect(info?.row?.original?.name as string)}
             >
-              <MagnifyingGlassCircleIconSolid className='n-size-token-7' />
+              <ExploreIcon className='n-size-token-7' />
             </IconButtonWithToolTip>
             <IconButtonWithToolTip
               placement='left'
-              text='copy'
+              text={copyRow ? 'Copied' : 'Copy'}
               size='large'
               label='Copy Row'
               disabled={info.getValue() === 'Uploading'}
@@ -595,7 +593,7 @@ const FileTable: ForwardRefRenderFunction<ChildRef, FileTableProps> = (props, re
                 handleCopy(copied);
               }}
             >
-              <ClipboardDocumentIconSolid className={`${copyRow} ? 'cursor-wait': 'cursor`} />
+              <ClipboardDocumentIconSolid className={`${copyRow ? 'cursor-progress!' : 'cursor'} `} />
             </IconButtonWithToolTip>
             <IconButtonWithToolTip
               onClick={() => {
@@ -618,7 +616,16 @@ const FileTable: ForwardRefRenderFunction<ChildRef, FileTableProps> = (props, re
         footer: (info) => info.column.id,
       }),
     ],
-    [filesData.length, statusFilter, filetypeFilter, llmtypeFilter, fileSourceFilter, isReadOnlyUser, colorMode]
+    [
+      filesData.length,
+      statusFilter,
+      filetypeFilter,
+      llmtypeFilter,
+      fileSourceFilter,
+      isReadOnlyUser,
+      colorMode,
+      copyRow,
+    ]
   );
 
   const table = useReactTable({
@@ -716,7 +723,7 @@ const FileTable: ForwardRefRenderFunction<ChildRef, FileTableProps> = (props, re
                   waitingQueue.length && waitingQueue.find((f: CustomFile) => f.name === item.fileName);
                 if (isFileCompleted(waitingFile as CustomFile, item)) {
                   setProcessedCount((prev) => calculateProcessedCount(prev, batchSize));
-                  queue.remove(item.fileName);
+                  queue.remove((i) => i.name === item.fileName);
                 }
                 if (waitingFile && item.status === 'Completed') {
                   setProcessedCount((prev) => {
@@ -725,14 +732,14 @@ const FileTable: ForwardRefRenderFunction<ChildRef, FileTableProps> = (props, re
                     }
                     return prev + 1;
                   });
-                  queue.remove(item.fileName);
+                  queue.remove((i) => i.name === item.fileName);
                 }
                 prefiles.push({
                   name: item?.fileName,
                   size: item?.fileSize ?? 0,
                   type: item?.fileType?.includes('.')
-                    ? item?.fileType?.substring(1)?.toUpperCase() ?? 'None'
-                    : item?.fileType?.toUpperCase() ?? 'None',
+                    ? (item?.fileType?.substring(1)?.toUpperCase() ?? 'None')
+                    : (item?.fileType?.toUpperCase() ?? 'None'),
                   nodesCount: item?.nodeCount ?? 0,
                   processingTotalTime: item?.processingTime ?? 'None',
                   relationshipsCount: item?.relationshipCount ?? 0,
@@ -853,7 +860,7 @@ const FileTable: ForwardRefRenderFunction<ChildRef, FileTableProps> = (props, re
           }
           return prev + 1;
         });
-        queue.remove(fileName);
+        queue.remove((i) => i.name === fileName);
       } else {
         let errorobj = { error: res.data.error, message: res.data.message, fileName };
         throw new Error(JSON.stringify(errorobj));
@@ -927,7 +934,7 @@ const FileTable: ForwardRefRenderFunction<ChildRef, FileTableProps> = (props, re
         }
         return prev + 1;
       });
-      queue.remove(fileName);
+      queue.remove((i) => i.name === fileName);
     }
   };
 
@@ -987,13 +994,6 @@ const FileTable: ForwardRefRenderFunction<ChildRef, FileTableProps> = (props, re
     <>
       {filesData ? (
         <>
-          {filesData.length === 0 && pathname === '/readonly' && (
-            <Dialog hasDisabledCloseButton={true} isOpen={true}>
-              <Dialog.Content>
-                <Login />
-              </Dialog.Content>
-            </Dialog>
-          )}
           <DataGrid
             ref={tableRef}
             isResizable={true}
@@ -1016,7 +1016,20 @@ const FileTable: ForwardRefRenderFunction<ChildRef, FileTableProps> = (props, re
                 />
               ),
               TableResults: () => {
-                if (connectionStatus) {
+                if (connectionStatus && !isAuthenticated && !isLoading && filesData.length === 0) {
+                  return (
+                    <DataGridComponents.TableResults>
+                      <Flex flexDirection='row' gap='0' alignItems='center'>
+                        <span>
+                          <InformationCircleIconOutline className='n-size-token-6' />
+                        </span>
+                        {` It seems like you haven't ingested any data yet. To begin building your knowledge graph, you'll need to log
+            in to the main application.`}
+                        <span></span>
+                      </Flex>
+                    </DataGridComponents.TableResults>
+                  );
+                } else if (connectionStatus) {
                   return (
                     <DataGridComponents.TableResults>
                       <Flex flexDirection='row' gap='0' alignItems='center'>
@@ -1057,4 +1070,4 @@ const FileTable: ForwardRefRenderFunction<ChildRef, FileTableProps> = (props, re
   );
 };
 
-export default forwardRef(FileTable);
+export default React.memo(forwardRef(FileTable));

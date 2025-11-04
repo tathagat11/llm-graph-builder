@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.main import *
 from src.QA_integration import *
 from src.shared.common_fn import *
+from src.shared.llm_graph_builder_exception import LLMGraphBuilderException
 import uvicorn
 import asyncio
 import base64
@@ -31,15 +32,35 @@ from fastapi.middleware.gzip import GZipMiddleware
 from src.ragas_eval import *
 from starlette.types import ASGIApp, Receive, Scope, Send
 from langchain_neo4j import Neo4jGraph
-from src.entities.source_node import sourceNode
 from starlette.middleware.sessions import SessionMiddleware
-from starlette.responses import HTMLResponse, RedirectResponse,JSONResponse
 from starlette.requests import Request
-import secrets
+from dotenv import load_dotenv
+load_dotenv(override=True)
 
 logger = CustomLogger()
 CHUNK_DIR = os.path.join(os.path.dirname(__file__), "chunks")
 MERGED_DIR = os.path.join(os.path.dirname(__file__), "merged_files")
+
+def sanitize_filename(filename):
+   """
+   Sanitize the user-provided filename to prevent directory traversal and remove unsafe characters.
+   """
+   # Remove path separators and collapse redundant separators
+   filename = os.path.basename(filename)
+   filename = os.path.normpath(filename)
+   return filename
+
+def validate_file_path(directory, filename):
+   """
+   Construct the full file path and ensure it is within the specified directory.
+   """
+   file_path = os.path.join(directory, filename)
+   abs_directory = os.path.abspath(directory)
+   abs_file_path = os.path.abspath(file_path)
+   # Ensure the file path starts with the intended directory path
+   if not abs_file_path.startswith(abs_directory):
+       raise ValueError("Invalid file path")
+   return abs_file_path
 
 def healthy_condition():
     output = {"healthy": True}
@@ -217,8 +238,9 @@ async def extract_knowledge_graph_from_file(
         start_time = time.time()
         graph = create_graph_database_connection(uri, userName, password, database)   
         graphDb_data_Access = graphDBdataAccess(graph)
-        merged_file_path = os.path.join(MERGED_DIR,file_name)
         if source_type == 'local file':
+            file_name = sanitize_filename(file_name)
+            merged_file_path = validate_file_path(MERGED_DIR, file_name)
             uri_latency, result = await extract_graph_from_file_local_file(uri, userName, password, database, model, merged_file_path, file_name, allowedNodes, allowedRelationship, token_chunk_size, chunk_overlap, chunks_to_combine, retry_condition, additional_instructions)
 
         elif source_type == 's3 bucket' and source_url:
@@ -278,24 +300,32 @@ async def extract_knowledge_graph_from_file(
         return create_api_response('Success', data=result, file_source= source_type)
     except LLMGraphBuilderException as e:
         error_message = str(e)
+        graph = create_graph_database_connection(uri, userName, password, database)   
+        graphDb_data_Access = graphDBdataAccess(graph)
         graphDb_data_Access.update_exception_db(file_name,error_message, retry_condition)
-        failed_file_process(uri,file_name, merged_file_path, source_type)
+        if source_type == 'local file':
+            failed_file_process(uri,file_name, merged_file_path)
         node_detail = graphDb_data_Access.get_current_status_document_node(file_name)
         # Set the status "Completed" in logging becuase we are treating these error already handled by application as like custom errors.
         json_obj = {'api_name':'extract','message':error_message,'file_created_at':formatted_time(node_detail[0]['created_time']),'error_message':error_message, 'file_name': file_name,'status':'Completed',
-                    'db_url':uri, 'userName':userName, 'database':database,'success_count':1, 'source_type': source_type, 'source_url':source_url, 'wiki_query':wiki_query, 'logging_time': formatted_time(datetime.now(timezone.utc)),'email':email}
+                    'db_url':uri, 'userName':userName, 'database':database,'success_count':1, 'source_type': source_type, 'source_url':source_url, 'wiki_query':wiki_query, 'logging_time': formatted_time(datetime.now(timezone.utc)),'email':email,
+                    'allowedNodes': allowedNodes, 'allowedRelationship': allowedRelationship}
         logger.log_struct(json_obj, "INFO")
         logging.exception(f'File Failed in extraction: {e}')
         return create_api_response("Failed", message = error_message, error=error_message, file_name=file_name)
     except Exception as e:
         message=f"Failed To Process File:{file_name} or LLM Unable To Parse Content "
         error_message = str(e)
+        graph = create_graph_database_connection(uri, userName, password, database)   
+        graphDb_data_Access = graphDBdataAccess(graph)
         graphDb_data_Access.update_exception_db(file_name,error_message, retry_condition)
-        failed_file_process(uri,file_name, merged_file_path, source_type)
+        if source_type == 'local file':
+            failed_file_process(uri,file_name, merged_file_path)
         node_detail = graphDb_data_Access.get_current_status_document_node(file_name)
         
         json_obj = {'api_name':'extract','message':message,'file_created_at':formatted_time(node_detail[0]['created_time']),'error_message':error_message, 'file_name': file_name,'status':'Failed',
-                    'db_url':uri, 'userName':userName, 'database':database,'failed_count':1, 'source_type': source_type, 'source_url':source_url, 'wiki_query':wiki_query, 'logging_time': formatted_time(datetime.now(timezone.utc)),'email':email}
+                    'db_url':uri, 'userName':userName, 'database':database,'failed_count':1, 'source_type': source_type, 'source_url':source_url, 'wiki_query':wiki_query, 'logging_time': formatted_time(datetime.now(timezone.utc)),'email':email,
+                    'allowedNodes': allowedNodes, 'allowedRelationship': allowedRelationship}
         logger.log_struct(json_obj, "ERROR")
         logging.exception(f'File Failed in extraction: {e}')
         return create_api_response('Failed', message=message + error_message[:100], error=error_message, file_name = file_name)
@@ -314,14 +344,6 @@ async def get_source_list(
     """
     try:
         start = time.time()
-        # if password is not None and password != "null":
-        #     decoded_password = decode_password(password)
-        # else:
-        #     decoded_password = None
-        #     userName = None
-        #     database = None
-        # if " " in uri:
-        #     uri = uri.replace(" ","+")
         result = await asyncio.to_thread(get_source_list_from_graph,uri,userName,password,database)
         end = time.time()
         elapsed_time = end - start
@@ -548,16 +570,20 @@ async def upload_large_file_into_chunks(file:UploadFile = File(...), chunkNumber
         result = await asyncio.to_thread(upload_file, graph, model, file, chunkNumber, totalChunks, originalname, uri, CHUNK_DIR, MERGED_DIR)
         end = time.time()
         elapsed_time = end - start
-        json_obj = {'api_name':'upload','db_url':uri,'userName':userName, 'database':database, 'chunkNumber':chunkNumber,'totalChunks':totalChunks,
-                            'original_file_name':originalname,'model':model, 'logging_time': formatted_time(datetime.now(timezone.utc)), 'elapsed_api_time':f'{elapsed_time:.2f}','email':email}
-        logger.log_struct(json_obj, "INFO")
+        if int(chunkNumber) == int(totalChunks):
+            json_obj = {'api_name':'upload','db_url':uri,'userName':userName, 'database':database, 'chunkNumber':chunkNumber,'totalChunks':totalChunks,
+                                'original_file_name':originalname,'model':model, 'logging_time': formatted_time(datetime.now(timezone.utc)), 'elapsed_api_time':f'{elapsed_time:.2f}','email':email}
+            logger.log_struct(json_obj, "INFO")
         if int(chunkNumber) == int(totalChunks):
             return create_api_response('Success',data=result, message='Source Node Created Successfully')
         else:
             return create_api_response('Success', message=result)
     except Exception as e:
-        message="Unable to upload large file into chunks. "
+        message="Unable to upload file in chunks"
         error_message = str(e)
+        graph = create_graph_database_connection(uri, userName, password, database)   
+        graphDb_data_Access = graphDBdataAccess(graph)
+        graphDb_data_Access.update_exception_db(originalname,error_message)
         logging.info(message)
         logging.exception(f'Exception:{error_message}')
         return create_api_response('Failed', message=message + error_message[:100], error=error_message, file_name = originalname)
@@ -568,8 +594,7 @@ async def upload_large_file_into_chunks(file:UploadFile = File(...), chunkNumber
 async def get_structured_schema(uri=Form(None), userName=Form(None), password=Form(None), database=Form(None),email=Form(None)):
     try:
         start = time.time()
-        graph = create_graph_database_connection(uri, userName, password, database)
-        result = await asyncio.to_thread(get_labels_and_relationtypes, graph)
+        result = await asyncio.to_thread(get_labels_and_relationtypes, uri, userName, password, database)
         end = time.time()
         elapsed_time = end - start
         logging.info(f'Schema result from DB: {result}')
@@ -736,10 +761,10 @@ async def cancelled_job(uri=Form(None), userName=Form(None), password=Form(None)
         gc.collect()
 
 @app.post("/populate_graph_schema")
-async def populate_graph_schema(input_text=Form(None), model=Form(None), is_schema_description_checked=Form(None),email=Form(None)):
+async def populate_graph_schema(input_text=Form(None), model=Form(None), is_schema_description_checked=Form(None),is_local_storage=Form(None),email=Form(None)):
     try:
         start = time.time()
-        result = populate_graph_schema_from_text(input_text, model, is_schema_description_checked)
+        result = populate_graph_schema_from_text(input_text, model, is_schema_description_checked, is_local_storage)
         end = time.time()
         elapsed_time = end - start
         json_obj = {'api_name':'populate_graph_schema', 'model':model, 'is_schema_description_checked':is_schema_description_checked, 'input_text':input_text, 'logging_time': formatted_time(datetime.now(timezone.utc)), 'elapsed_api_time':f'{elapsed_time:.2f}','email':email}
@@ -866,7 +891,7 @@ async def retry_processing(uri=Form(None), userName=Form(None), password=Form(No
     try:
         start = time.time()
         graph = create_graph_database_connection(uri, userName, password, database)
-        chunks =  graph.query(QUERY_TO_GET_CHUNKS, params={"filename":file_name})
+        chunks = execute_graph_query(graph,QUERY_TO_GET_CHUNKS,params={"filename":file_name})
         end = time.time()
         elapsed_time = end - start
         json_obj = {'api_name':'retry_processing', 'db_url':uri, 'userName':userName, 'database':database, 'file_name':file_name,'retry_condition':retry_condition,

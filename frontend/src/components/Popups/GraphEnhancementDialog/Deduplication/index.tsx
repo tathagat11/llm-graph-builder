@@ -12,16 +12,7 @@ import {
   Row,
   getSortedRowModel,
 } from '@tanstack/react-table';
-import {
-  Checkbox,
-  DataGrid,
-  DataGridComponents,
-  Flex,
-  Tag,
-  TextLink,
-  Typography,
-  useMediaQuery,
-} from '@neo4j-ndl/react';
+import { Checkbox, DataGrid, DataGridComponents, Flex, Tag, Typography, useMediaQuery, Button } from '@neo4j-ndl/react';
 import Legend from '../../../UI/Legend';
 import { DocumentIconOutline } from '@neo4j-ndl/react/icons';
 import { calcWordColor } from '@neo4j-devtools/word-color';
@@ -155,15 +146,16 @@ export default function DeduplicationTab() {
         cell: (info) => {
           return (
             <div className='textellipsis'>
-              <TextLink
+              <Button
                 className='cursor-pointer!'
+                fill='text'
+                onClick={() => handleDuplicateNodeClick(info.row.id, 'chatInfoView')}
                 htmlAttributes={{
-                  onClick: () => handleDuplicateNodeClick(info.row.id, 'chatInfoView'),
                   title: info.getValue(),
                 }}
               >
                 {info.getValue()}
-              </TextLink>
+              </Button>
             </div>
           );
         },
@@ -264,26 +256,22 @@ export default function DeduplicationTab() {
   const selectedFilesCheck = mergeAPIloading
     ? 'Merging...'
     : table.getSelectedRowModel().rows.length
-    ? `Merge Duplicate Nodes (${table.getSelectedRowModel().rows.length})`
-    : 'Select Node(s) to Merge';
+      ? `Merge Duplicate Nodes (${table.getSelectedRowModel().rows.length})`
+      : 'Select Node(s) to Merge';
   return (
     <>
       <div>
         <Flex justifyContent='space-between' flexDirection='row'>
           <Flex>
-            <Typography variant={isTablet ? 'subheading-medium' : 'subheading-large'}>
+            <Typography variant={'subheading-medium'}>
               Refine Your Knowledge Graph: Merge Duplicate Entities:
             </Typography>
-            <Typography variant={isTablet ? 'body-small' : 'subheading-large'}>
+            <Typography variant={'body-small'}>
               Identify and merge similar entries like "Apple" and "Apple Inc." to eliminate redundancy and improve the
               accuracy and clarity of your knowledge graph.
             </Typography>
           </Flex>
-          {nodesCount > 0 && (
-            <Typography variant={isTablet ? 'subheading-medium' : 'subheading-large'}>
-              Total Duplicate Nodes: {nodesCount}
-            </Typography>
-          )}
+          {nodesCount > 0 && <Typography variant={'subheading-medium'}>Total Duplicate Nodes: {nodesCount}</Typography>}
         </Flex>
         <DataGrid
           ref={tableRef}
@@ -332,18 +320,17 @@ export default function DeduplicationTab() {
               await clickHandler();
               await fetchDuplicateNodes();
             }}
-            size='large'
             loading={mergeAPIloading}
             text={
               isLoading
                 ? 'Fetching Duplicate Nodes'
                 : !isLoading && !duplicateNodes.length
-                ? 'No Nodes Found'
-                : !table.getSelectedRowModel().rows.length
-                ? 'No Nodes Selected'
-                : mergeAPIloading
-                ? 'Merging'
-                : `Merge Selected Nodes (${table.getSelectedRowModel().rows.length})`
+                  ? 'No Nodes Found'
+                  : !table.getSelectedRowModel().rows.length
+                    ? 'No Nodes Selected'
+                    : mergeAPIloading
+                      ? 'Merging'
+                      : `Merge Selected Nodes (${table.getSelectedRowModel().rows.length})`
             }
             label='Merge Duplicate Node Button'
             disabled={!table.getSelectedRowModel().rows.length}

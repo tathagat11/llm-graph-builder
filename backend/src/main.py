@@ -23,6 +23,7 @@ from src.document_sources.youtube import *
 from src.shared.common_fn import *
 from src.make_relationships import *
 from src.document_sources.web_pages import *
+from src.graph_query import get_graphDB_driver
 import re
 from langchain_community.document_loaders import WikipediaLoader, WebBaseLoader
 import warnings
@@ -124,7 +125,12 @@ def create_source_node_graph_web_url(graph, model, source_url, source_type):
       raise LLMGraphBuilderException(message)
     try:
       title = pages[0].metadata['title'].strip()
-      if not title:
+      if title:
+        graphDb_data_Access = graphDBdataAccess(graph)
+        existing_url = graphDb_data_Access.get_websource_url(title)
+        if existing_url != source_url:
+          title = str(title) + "-" + str(last_url_segment(source_url)).strip()
+      else:
         title = last_url_segment(source_url)
       language = pages[0].metadata['language']
     except:
@@ -253,7 +259,7 @@ async def extract_graph_from_file_s3(uri, userName, password, database, model, s
   
 async def extract_graph_from_web_page(uri, userName, password, database, model, source_url, file_name, allowedNodes, allowedRelationship, token_chunk_size, chunk_overlap, chunks_to_combine, retry_condition, additional_instructions):
   if not retry_condition:
-    file_name, pages = get_documents_from_web_page(source_url)
+    pages = get_documents_from_web_page(source_url)
     if pages==None or len(pages)==0:
       raise LLMGraphBuilderException(f'Content is not available for given URL : {file_name}')
     return await processing_source(uri, userName, password, database, model, file_name, pages, allowedNodes, allowedRelationship, token_chunk_size, chunk_overlap, chunks_to_combine, additional_instructions=additional_instructions)
@@ -395,7 +401,7 @@ async def processing_source(uri, userName, password, database, model, file_name,
           obj_source_node.processing_time = processed_time
           obj_source_node.processed_chunk = select_chunks_upto+select_chunks_with_retry
           if retry_condition == START_FROM_BEGINNING:
-            result = graph.query(QUERY_TO_GET_NODES_AND_RELATIONS_OF_A_DOCUMENT, params={"filename":file_name})
+            result = execute_graph_query(graph,QUERY_TO_GET_NODES_AND_RELATIONS_OF_A_DOCUMENT, params={"filename":file_name})
             obj_source_node.node_count = result[0]['nodes']
             obj_source_node.relationship_count = result[0]['rels']
           else:  
@@ -498,21 +504,10 @@ async def processing_chunks(chunkId_chunkDoc_list,graph,uri, userName, password,
   logging.info(f'Time taken to create relationship between chunk and entities: {elapsed_relationship:.2f} seconds')
   latency_processing_chunk["relationship_between_chunk_entity"] = f'{elapsed_relationship:.2f}'
   
-  distinct_nodes = set()
-  relations = []
-  for graph_document in graph_documents:
-    #get distinct nodes
-    for node in graph_document.nodes:
-          node_id = node.id
-          node_type= node.type
-          if (node_id, node_type) not in distinct_nodes:
-            distinct_nodes.add((node_id, node_type))
-    #get all relations
-    for relation in graph_document.relationships:
-          relations.append(relation.type)
-
-    node_count += len(distinct_nodes)
-    rel_count += len(relations)
+  graphDb_data_Access = graphDBdataAccess(graph)
+  count_response = graphDb_data_Access.update_node_relationship_count(file_name)
+  node_count = count_response[file_name].get('nodeCount',"0")
+  rel_count = count_response[file_name].get('relationshipCount',"0")
   return node_count,rel_count,latency_processing_chunk
 
 def get_chunkId_chunkDoc_list(graph, file_name, pages, token_chunk_size, chunk_overlap, retry_condition):
@@ -534,7 +529,7 @@ def get_chunkId_chunkDoc_list(graph, file_name, pages, token_chunk_size, chunk_o
   
   else:  
     chunkId_chunkDoc_list=[]
-    chunks =  graph.query(QUERY_TO_GET_CHUNKS, params={"filename":file_name})
+    chunks =  execute_graph_query(graph,QUERY_TO_GET_CHUNKS, params={"filename":file_name})
     
     if chunks[0]['text'] is None or chunks[0]['text']=="" or not chunks :
       raise LLMGraphBuilderException(f"Chunks are not created for {file_name}. Please re-upload file and try again.")    
@@ -545,13 +540,13 @@ def get_chunkId_chunkDoc_list(graph, file_name, pages, token_chunk_size, chunk_o
       
       if retry_condition ==  START_FROM_LAST_PROCESSED_POSITION:
         logging.info(f"Retry : start_from_last_processed_position")
-        starting_chunk = graph.query(QUERY_TO_GET_LAST_PROCESSED_CHUNK_POSITION, params={"filename":file_name})
+        starting_chunk = execute_graph_query(graph,QUERY_TO_GET_LAST_PROCESSED_CHUNK_POSITION, params={"filename":file_name})
         
         if starting_chunk and starting_chunk[0]["position"] < len(chunkId_chunkDoc_list):
           return len(chunks), chunkId_chunkDoc_list[starting_chunk[0]["position"] - 1:]
         
         elif starting_chunk and starting_chunk[0]["position"] == len(chunkId_chunkDoc_list):
-          starting_chunk = graph.query(QUERY_TO_GET_LAST_PROCESSED_CHUNK_WITHOUT_ENTITY, params={"filename":file_name})
+          starting_chunk =  execute_graph_query(graph,QUERY_TO_GET_LAST_PROCESSED_CHUNK_WITHOUT_ENTITY, params={"filename":file_name})
           return len(chunks), chunkId_chunkDoc_list[starting_chunk[0]["position"] - 1:]
         
         else:
@@ -669,22 +664,41 @@ def upload_file(graph, model, chunk, chunk_number:int, total_chunks:int, origina
       return {'file_size': file_size, 'file_name': originalname, 'file_extension':file_extension, 'message':f"Chunk {chunk_number}/{total_chunks} saved"}
   return f"Chunk {chunk_number}/{total_chunks} saved"
 
-def get_labels_and_relationtypes(graph):
-  query = """
-          RETURN collect { 
-          CALL db.labels() yield label 
-          WHERE NOT label  IN ['Document','Chunk','_Bloom_Perspective_', '__Community__', '__Entity__', 'Session', 'Message'] 
-          return label order by label limit 100 } as labels, 
-          collect { 
-          CALL db.relationshipTypes() yield relationshipType  as type 
-          WHERE NOT type  IN ['PART_OF', 'NEXT_CHUNK', 'HAS_ENTITY', '_Bloom_Perspective_','FIRST_CHUNK','SIMILAR','IN_COMMUNITY','PARENT_COMMUNITY', 'NEXT', 'LAST_MESSAGE'] 
-          return type order by type LIMIT 100 } as relationshipTypes
-          """
-  graphDb_data_Access = graphDBdataAccess(graph)
-  result = graphDb_data_Access.execute_query(query)
-  if result is None:
-     result=[]
-  return result
+def get_labels_and_relationtypes(uri, userName, password, database):
+  excluded_labels = {'Document', 'Chunk', '_Bloom_Perspective_', '__Community__', '__Entity__', 'Session', 'Message'}
+  excluded_relationships = {
+       'NEXT_CHUNK', '_Bloom_Perspective_', 'FIRST_CHUNK',
+       'SIMILAR', 'IN_COMMUNITY', 'PARENT_COMMUNITY', 'NEXT', 'LAST_MESSAGE'
+   }
+  driver = get_graphDB_driver(uri, userName, password,database) 
+  triples = set()
+  with driver.session(database=database) as session:
+    result = session.run("""
+           MATCH (n)-[r]->(m)
+           RETURN DISTINCT labels(n) AS fromLabels, type(r) AS relType, labels(m) AS toLabels
+       """)
+    for record in result:
+      from_labels = record["fromLabels"]
+      to_labels = record["toLabels"]
+      rel_type = record["relType"]
+      from_label = next((lbl for lbl in from_labels if lbl not in excluded_labels), None)
+      to_label = next((lbl for lbl in to_labels if lbl not in excluded_labels), None)
+      if not from_label or not to_label:
+          continue
+      if rel_type == 'PART_OF':
+          if from_label == 'Chunk' and to_label == 'Document':
+              continue 
+      elif rel_type == 'HAS_ENTITY':
+          if from_label == 'Chunk':
+              continue 
+      elif (
+          from_label in excluded_labels or
+          to_label in excluded_labels or
+          rel_type in excluded_relationships
+      ):
+          continue
+      triples.add(f"{from_label}-{rel_type}->{to_label}")
+  return {"triplets": list(triples)}
 
 def manually_cancelled_job(graph, filenames, source_types, merged_dir, uri):
   
@@ -711,7 +725,7 @@ def manually_cancelled_job(graph, filenames, source_types, merged_dir, uri):
         delete_uploaded_local_file(merged_file_path,file_name)
   return "Cancelled the processing job successfully"
 
-def populate_graph_schema_from_text(text, model, is_schema_description_cheked):
+def populate_graph_schema_from_text(text, model, is_schema_description_checked, is_local_storage):
   """_summary_
 
   Args:
@@ -722,8 +736,8 @@ def populate_graph_schema_from_text(text, model, is_schema_description_cheked):
   Returns:
       data (list): list of lebels and relationTypes
   """
-  result = schema_extraction_from_text(text, model, is_schema_description_cheked)
-  return {"labels": result.labels, "relationshipTypes": result.relationshipTypes}
+  result = schema_extraction_from_text(text, model, is_schema_description_checked, is_local_storage)
+  return result
 
 def set_status_retry(graph, file_name, retry_condition):
     graphDb_data_Access = graphDBdataAccess(graph)
@@ -736,20 +750,19 @@ def set_status_retry(graph, file_name, retry_condition):
     if retry_condition == DELETE_ENTITIES_AND_START_FROM_BEGINNING or retry_condition == START_FROM_BEGINNING:
         obj_source_node.processed_chunk=0
     if retry_condition == DELETE_ENTITIES_AND_START_FROM_BEGINNING:
-        graph.query(QUERY_TO_DELETE_EXISTING_ENTITIES, params={"filename":file_name})
+        execute_graph_query(graph,QUERY_TO_DELETE_EXISTING_ENTITIES, params={"filename":file_name})
         obj_source_node.node_count=0
         obj_source_node.relationship_count=0
     logging.info(obj_source_node)
     graphDb_data_Access.update_source_node(obj_source_node)
 
-def failed_file_process(uri,file_name, merged_file_path, source_type):
+def failed_file_process(uri,file_name, merged_file_path):
   gcs_file_cache = os.environ.get('GCS_FILE_CACHE')
-  if source_type == 'local file':
-    if gcs_file_cache == 'True':
-        folder_name = create_gcs_bucket_folder_name_hashed(uri,file_name)
-        copy_failed_file(BUCKET_UPLOAD, BUCKET_FAILED_FILE, folder_name, file_name)
-        time.sleep(5)
-        delete_file_from_gcs(BUCKET_UPLOAD,folder_name,file_name)
-    else:
-        logging.info(f'Deleted File Path: {merged_file_path} and Deleted File Name : {file_name}')
-        delete_uploaded_local_file(merged_file_path,file_name)
+  if gcs_file_cache == 'True':
+      folder_name = create_gcs_bucket_folder_name_hashed(uri,file_name)
+      copy_failed_file(BUCKET_UPLOAD, BUCKET_FAILED_FILE, folder_name, file_name)
+      time.sleep(5)
+      delete_file_from_gcs(BUCKET_UPLOAD,folder_name,file_name)
+  else:
+      logging.info(f'Deleted File Path: {merged_file_path} and Deleted File Name : {file_name}')
+      delete_uploaded_local_file(merged_file_path,file_name)
