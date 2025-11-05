@@ -59,5 +59,10 @@
     "tailwindcss": "^4.1.5",
     "typescript": "^5.7.3",
     "vite": "^4.5.3"
-  }
+  },
+  "description": "ReactJS app for building an knowledge graph using [Neo4j Needle](https://www.neo4j.design/).",
+  "main": "postcss.config.js",
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
 }
